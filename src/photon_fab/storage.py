@@ -33,11 +33,14 @@ def utcnow() -> str:
 
 
 def connect(path: str = ":memory:") -> sqlite3.Connection:
-    db = sqlite3.connect(path)
+    # autocommit（isolation_level=None）：所有事务边界由 transaction()
+    # 的 BEGIN IMMEDIATE/commit 显式控制，避免多线程共享连接时
+    # 隐式事务与显式事务互相干扰。
+    db = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=10)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
+    db.execute("PRAGMA busy_timeout=5000")
     db.executescript(SCHEMA)
-    db.commit()
     return db
 
 

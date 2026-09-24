@@ -66,6 +66,33 @@ PYTHONPATH=src python3 -m photon_fab.api --database photon.sqlite3 --port 8080
 
 HTTP 健康检查为 `GET /health`，登录、批次、测量和分析请求均支持 JSON；服务不访问外部网络，可在单个 Linux 应用容器中完成验收。
 
+### 共享设备预约
+
+多个伙伴团队共享光谱仪（`spectrometer`）和封测线（`packaging_line`）。`src/photon_fab/schedule.py` 与 `storage_schedule.py` 提供预约后台：
+
+- 管理员管理团队、资源，并通过 `PUT`（POST `teams/{id}/quota`）设置团队每周配额（分钟，UTC 周一为周界）；
+- 工程师只能为**所属团队**创建、取消或变更预约；操作员无预约权限；管理员可代任意团队操作并可改写已开始的预约；
+- 区间采用半开语义 `[starts_at, ends_at)`，全部时间必须带时区并归一化为 UTC；首尾相接不算冲突，重叠返回 409；
+- **预约开始后普通用户不能取消或变更**，仅管理员可以；
+- 取消（软删除，状态置 `cancelled`）与时段变更都保留旧值/原因和操作者的审计记录（`GET /audit`），取消后释放时段与周配额；
+- 跨周边界的预约按重叠分钟分别计入各周；`GET /quota` 返回配额、已用、剩余与是否超额；
+- 并发预约的唯一成功语义：进程内写锁串行化 + SQLite `BEGIN IMMEDIATE` 事务内冲突检测，同一资源同一时段的并发请求恰好一个成功（已由多线程与跨文件连接测试覆盖）。
+
+预约相关接口（Bearer 令牌认证）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/teams` / `/resources` | 管理员创建团队 / 资源 |
+| POST | `/teams/{id}/quota` | 管理员设置周配额 |
+| POST | `/teams/{id}/members` | 管理员将用户编入团队（一人一队） |
+| GET | `/teams` / `/resources` | 列出团队 / 资源 |
+| POST | `/bookings` | 创建预约（`resource_id`、`starts_at`、`ends_at`，UTC） |
+| GET | `/bookings` | 按 `resource_id`/`team_id`/`starts_after`/`starts_before` 查询 |
+| POST | `/bookings/{id}/cancel` | 取消（需 `reason`），开始后仅管理员 |
+| POST | `/bookings/{id}/change` | 变更时段，重新做冲突与配额校验 |
+| GET | `/quota` | 周配额用量统计（`team_id`、`week_of` 可选） |
+| GET | `/audit` | 预约/团队/资源审计事件 |
+
 ## HTTP 服务
 
 ```bash
