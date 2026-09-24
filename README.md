@@ -18,8 +18,9 @@
 
 - `src/power_dispatch/`：电价、设施、送出线路、燃料库存、提名、负荷情景、HTTP API 与离线验收；
 - `src/plant_science/`：机组巡检传感器校准与统计分析准入；
+- `src/equipment_booking/`：共享光谱仪与封测线的团队设备预约、冲突检测与周配额；
 - `fixtures/`：机组分析准入演示协议和结构化测点；
-- `tests/`：核心规则、错误边界、API 和端到端验收测试。
+- `tests/`：核心规则、错误边界、API、并发唯一成功语义和端到端验收测试。
 
 ## 环境
 
@@ -65,6 +66,42 @@ PYTHONPATH=src python3 -m photon_fab.api --database photon.sqlite3 --port 8080
 ```
 
 HTTP 健康检查为 `GET /health`，登录、批次、测量和分析请求均支持 JSON；服务不访问外部网络，可在单个 Linux 应用容器中完成验收。
+
+## 实验室设备预约服务
+
+`src/equipment_booking/` 为多个伙伴团队共享光谱仪和封测线提供后台预约：
+
+- 管理员维护团队（含每周配额分钟数，0 表示不限）、设备（光谱仪、封测线等）并可停用设备；
+- 工程师只能为所属团队创建、取消或改期预约，管理员可跨团队操作；
+- 半开区间 `[start, end)` 冲突检测：首尾相接允许，重叠返回 `409 conflict`；
+- 配额按 UTC ISO 周分别计费，跨周预约按周截断；取消后配额立即释放；
+- 预约开始（UTC）后普通用户不能取消或改期，管理员强制操作同样写入审计；
+- 全部写操作进入哈希串联审计日志，`GET /audit/verify` 可离线校验顺序与内容完整性；
+- 所有写事务使用 `BEGIN IMMEDIATE`，配合活跃预约的数据库级部分唯一索引，
+  并发抢同一时段在真实多线程下保证恰好一个成功；
+- 所有时间在入口处必须显式携带时区（`Z` 或偏移），统一归一化为 UTC。
+
+```bash
+PYTHONPATH=src python3 -m equipment_booking.acceptance
+PYTHONPATH=src python3 -m equipment_booking.api --database equipment_booking.sqlite3 --port 8090
+```
+
+除 `GET /health` 外，请求通过 `X-Actor-Id` 携带操作者编号。主要接口：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/teams` / GET `/teams` | 管理员建档 / 列出团队 |
+| PUT | `/teams/{id}/quota` | 设置每周配额分钟数 |
+| GET | `/teams/{id}/quota?week=YYYY-Www` | 周配额用量与剩余分钟 |
+| POST | `/users` | 管理员登记工程师（初始化时可匿名创建首个管理员） |
+| POST | `/resources` / GET `/resources` | 设备建档 / 列表 |
+| POST | `/resources/{id}/deactivate` | 停用设备（停用后不能新建预约） |
+| GET | `/resources/{id}/schedule?start=&end=` | 查询时间窗内的设备排期 |
+| POST | `/reservations` | 创建预约（可带 `idempotency_key` 与可选 `team_id`） |
+| GET | `/reservations/{id}` | 查询单个预约 |
+| POST | `/reservations/{id}/cancel` | 取消预约（需 `reason`） |
+| POST | `/reservations/{id}/reschedule` | 改期 / 修改用途，变更前后均入审计 |
+| GET | `/audit` / GET `/audit/verify` | 管理员查看审计事件 / 校验哈希链 |
 
 ## HTTP 服务
 
